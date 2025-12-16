@@ -12,6 +12,12 @@
 	let connected = $state(false);
 	let error = $state('');
 	let messages: Array<{ type: string; data: any; timestamp: string }> = $state([]);
+	let localStream: MediaStream | null = $state(null);
+	let remoteStream: MediaStream | null = $state(null);
+	let peerConnection: RTCPeerConnection | null = $state(null);
+	let localVideo: HTMLVideoElement;
+	let remoteVideo: HTMLVideoElement;
+	let isCaller = $state(false);
 
 	const RTC_URL = 'https://rtc.mossp.me';
 	const WS_URL = 'wss://rtc.mossp.me';
@@ -91,6 +97,68 @@
 		}
 	}
 
+	async function startLocalVideo() {
+		try {
+			localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+			if (localVideo) localVideo.srcObject = localStream;
+		} catch (e: any) {
+			error = 'Failed to access camera/microphone: ' + e.message;
+		}
+	}
+
+	function createPeerConnection() {
+		peerConnection = new RTCPeerConnection({
+			iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+		});
+
+		// Add local stream tracks to peer connection
+		if (localStream) {
+			localStream.getTracks().forEach(track => peerConnection?.addTrack(track, localStream!));
+		}
+
+		// Handle remote stream
+		peerConnection.ontrack = (event) => {
+			remoteStream = event.streams[0];
+			if (remoteVideo) remoteVideo.srcObject = remoteStream;
+			addMessage('system', { message: 'Remote stream received' });
+		};
+
+		// Handle ICE candidates
+		peerConnection.onicecandidate = (event) => {
+			if (event.candidate && ws && connected) {
+				ws.send(JSON.stringify({
+					type: 'ice-candidate',
+					candidate: event.candidate
+				}));
+				addMessage('sent', { type: 'ice-candidate' });
+			}
+		};
+
+		peerConnection.onconnectionstatechange = () => {
+			addMessage('system', { message: `Connection state: ${peerConnection?.connectionState}` });
+		};
+	}
+
+	async function startCall() {
+		if (!connected || !localStream) {
+			error = 'Connect to room and start video first';
+			return;
+		}
+		isCaller = true;
+		createPeerConnection();
+		try {
+			const offer = await peerConnection!.createOffer();
+			await peerConnection!.setLocalDescription(offer);
+			ws!.send(JSON.stringify({
+				type: 'offer',
+				sdp: offer.sdp
+			}));
+			addMessage('sent', { type: 'offer' });
+		} catch (e: any) {
+			error = 'Failed to create offer: ' + e.message;
+		}
+	}
+
 	function connectToRoom() {
 		if (!roomCode || !displayName) {
 			error = 'Please enter room code and display name';
@@ -99,33 +167,56 @@
 		error = '';
 		try {
 			ws = new WebSocket(`${WS_URL}/ws/signal/${roomCode}?displayName=${encodeURIComponent(displayName)}`);
-			ws.onopen = () => { connected = true; addMessage('system', { message: 'Connected' }); };
-			ws.onmessage = (e) => { try { addMessage('received', JSON.parse(e.data)); } catch {} };
+			ws.onopen = () => {
+				connected = true;
+				addMessage('system', { message: 'Connected to signaling server' });
+			};
+			ws.onmessage = async (e) => {
+				try {
+					const data = JSON.parse(e.data);
+					addMessage('received', data);
+					await handleSignalingMessage(data);
+				} catch {}
+			};
 			ws.onerror = () => { error = 'WebSocket error'; };
-			ws.onclose = () => { connected = false; addMessage('system', { message: 'Disconnected' }); };
+			ws.onclose = () => {
+				connected = false;
+				addMessage('system', { message: 'Disconnected' });
+			};
 		} catch (e: any) {
 			error = e.message;
 		}
 	}
 
-	function disconnect() { if (ws) { ws.close(); ws = null; connected = false; } }
-
-	function sendOffer() {
-		if (!ws || !connected) return;
-		const msg = { type: 'offer', sdp: 'demo-sdp-offer', targetPeerId: 'peer-123' };
-		ws.send(JSON.stringify(msg)); addMessage('sent', msg);
+	async function handleSignalingMessage(data: any) {
+		if (data.type === 'offer') {
+			// Received an offer, create answer
+			if (!peerConnection) createPeerConnection();
+			await peerConnection!.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: data.sdp }));
+			const answer = await peerConnection!.createAnswer();
+			await peerConnection!.setLocalDescription(answer);
+			ws!.send(JSON.stringify({
+				type: 'answer',
+				sdp: answer.sdp
+			}));
+			addMessage('sent', { type: 'answer' });
+		} else if (data.type === 'answer') {
+			// Received an answer
+			await peerConnection?.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
+		} else if (data.type === 'ice-candidate' && data.candidate) {
+			// Received ICE candidate
+			await peerConnection?.addIceCandidate(new RTCIceCandidate(data.candidate));
+		}
 	}
 
-	function sendAnswer() {
-		if (!ws || !connected) return;
-		const msg = { type: 'answer', sdp: 'demo-sdp-answer', targetPeerId: 'peer-123' };
-		ws.send(JSON.stringify(msg)); addMessage('sent', msg);
-	}
-
-	function sendICE() {
-		if (!ws || !connected) return;
-		const msg = { type: 'ice-candidate', candidate: { candidate: 'demo-ice' }, targetPeerId: 'peer-123' };
-		ws.send(JSON.stringify(msg)); addMessage('sent', msg);
+	function disconnect() {
+		if (ws) { ws.close(); ws = null; connected = false; }
+		if (peerConnection) { peerConnection.close(); peerConnection = null; }
+		if (localStream) {
+			localStream.getTracks().forEach(track => track.stop());
+			localStream = null;
+		}
+		remoteStream = null;
 	}
 
 	function addMessage(type: string, data: any) {
@@ -172,50 +263,66 @@
 
 		{#if token}
 			<div class="grid md:grid-cols-2 gap-8 mb-8">
-			<div class="bg-white/10 backdrop-blur-lg rounded-lg p-6 border border-white/20">
-				<h2 class="text-2xl font-semibold text-white mb-4">1. Create Room</h2>
-				<button onclick={createRoom} class="w-full bg-purple-600 hover:bg-purple-700 text-white font-semibold py-3 px-6 rounded-lg">Create New Room</button>
-				{#if roomCode}
-					<div class="mt-4 p-4 bg-green-500/20 border border-green-500 rounded-lg">
-						<p class="text-green-200 font-semibold mb-2">Room Created!</p>
-						<p class="text-white text-sm">Code: <code class="bg-black/30 px-2 py-1 rounded text-xl font-bold">{roomCode}</code></p>
-					</div>
-				{/if}
-			</div>
-
-			<div class="bg-white/10 backdrop-blur-lg rounded-lg p-6 border border-white/20">
-				<h2 class="text-2xl font-semibold text-white mb-4">2. Join Room</h2>
-				<div class="space-y-4">
-					<div>
-						<label class="block text-sm font-medium text-slate-300 mb-2">Room Code</label>
-						<input type="text" bind:value={roomCode} placeholder="ABC123" class="w-full px-4 py-2 bg-black/30 border border-white/20 rounded-lg text-white" />
-					</div>
-					<div>
-						<label class="block text-sm font-medium text-slate-300 mb-2">Display Name</label>
-						<input type="text" bind:value={displayName} placeholder="Player 1" class="w-full px-4 py-2 bg-black/30 border border-white/20 rounded-lg text-white" />
-					</div>
-					{#if !connected}
-						<button onclick={connectToRoom} disabled={!roomCode || !displayName} class="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 text-white font-semibold py-3 px-6 rounded-lg">Connect</button>
-					{:else}
-						<button onclick={disconnect} class="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-3 px-6 rounded-lg">Disconnect</button>
+				<div class="bg-white/10 backdrop-blur-lg rounded-lg p-6 border border-white/20">
+					<h2 class="text-2xl font-semibold text-white mb-4">1. Create Room</h2>
+					<button onclick={createRoom} class="w-full bg-purple-600 hover:bg-purple-700 text-white font-semibold py-3 px-6 rounded-lg">Create New Room</button>
+					{#if roomCode}
+						<div class="mt-4 p-4 bg-green-500/20 border border-green-500 rounded-lg">
+							<p class="text-green-200 font-semibold mb-2">Room Created!</p>
+							<p class="text-white text-sm">Code: <code class="bg-black/30 px-2 py-1 rounded text-xl font-bold">{roomCode}</code></p>
+						</div>
 					{/if}
 				</div>
-				{#if connected}
-					<div class="mt-4 p-4 bg-green-500/20 border border-green-500 rounded-lg"><p class="text-green-200 font-semibold">Connected!</p></div>
-				{/if}
-			</div>
-		</div>
 
-		{#if connected}
-			<div class="bg-white/10 backdrop-blur-lg rounded-lg p-6 border border-white/20 mb-8">
-				<h2 class="text-2xl font-semibold text-white mb-4">3. Send Signaling Messages</h2>
-				<div class="grid grid-cols-3 gap-4">
-					<button onclick={sendOffer} class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-6 rounded-lg">Send Offer</button>
-					<button onclick={sendAnswer} class="bg-teal-600 hover:bg-teal-700 text-white font-semibold py-3 px-6 rounded-lg">Send Answer</button>
-					<button onclick={sendICE} class="bg-cyan-600 hover:bg-cyan-700 text-white font-semibold py-3 px-6 rounded-lg">Send ICE</button>
+				<div class="bg-white/10 backdrop-blur-lg rounded-lg p-6 border border-white/20">
+					<h2 class="text-2xl font-semibold text-white mb-4">2. Join Room</h2>
+					<div class="space-y-4">
+						<div>
+							<label class="block text-sm font-medium text-slate-300 mb-2">Room Code</label>
+							<input type="text" bind:value={roomCode} placeholder="ABC123" class="w-full px-4 py-2 bg-black/30 border border-white/20 rounded-lg text-white" />
+						</div>
+						<div>
+							<label class="block text-sm font-medium text-slate-300 mb-2">Display Name</label>
+							<input type="text" bind:value={displayName} placeholder="Player 1" class="w-full px-4 py-2 bg-black/30 border border-white/20 rounded-lg text-white" />
+						</div>
+						{#if !connected}
+							<button onclick={connectToRoom} disabled={!roomCode || !displayName} class="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 text-white font-semibold py-3 px-6 rounded-lg">Connect to Room</button>
+						{:else}
+							<button onclick={disconnect} class="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-3 px-6 rounded-lg">Disconnect</button>
+						{/if}
+					</div>
+					{#if connected}
+						<div class="mt-4 p-4 bg-green-500/20 border border-green-500 rounded-lg"><p class="text-green-200 font-semibold">Connected to signaling!</p></div>
+					{/if}
 				</div>
 			</div>
-		{/if}
+
+			{#if connected}
+				<div class="bg-white/10 backdrop-blur-lg rounded-lg p-6 border border-white/20 mb-8">
+					<h2 class="text-2xl font-semibold text-white mb-4">3. Video Call</h2>
+					<div class="grid md:grid-cols-2 gap-4 mb-6">
+						<div class="space-y-4">
+							<div class="aspect-video bg-black rounded-lg overflow-hidden">
+								<video bind:this={localVideo} autoplay muted playsinline class="w-full h-full object-cover"></video>
+							</div>
+							<p class="text-sm text-slate-400 text-center">Your Video</p>
+						</div>
+						<div class="space-y-4">
+							<div class="aspect-video bg-black rounded-lg overflow-hidden">
+								<video bind:this={remoteVideo} autoplay playsinline class="w-full h-full object-cover"></video>
+							</div>
+							<p class="text-sm text-slate-400 text-center">Remote Video</p>
+						</div>
+					</div>
+					<div class="grid grid-cols-2 gap-4">
+						{#if !localStream}
+							<button onclick={startLocalVideo} class="bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-6 rounded-lg">Start Camera</button>
+						{:else if !peerConnection}
+							<button onclick={startCall} class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg">Start Call</button>
+						{/if}
+					</div>
+				</div>
+			{/if}
 
 		<div class="bg-white/10 backdrop-blur-lg rounded-lg p-6 border border-white/20">
 			<h2 class="text-2xl font-semibold text-white mb-4">Message Log</h2>
