@@ -113,14 +113,28 @@
 
 		// Add local stream tracks to peer connection
 		if (localStream) {
-			localStream.getTracks().forEach(track => peerConnection?.addTrack(track, localStream!));
+			const tracks = localStream.getTracks();
+			addMessage('system', { message: `Adding ${tracks.length} local tracks to peer connection` });
+			tracks.forEach(track => {
+				peerConnection?.addTrack(track, localStream!);
+				addMessage('system', { message: `Added ${track.kind} track` });
+			});
+		} else {
+			addMessage('system', { message: 'WARNING: No local stream when creating peer connection' });
 		}
 
 		// Handle remote stream
 		peerConnection.ontrack = (event) => {
-			remoteStream = event.streams[0];
-			if (remoteVideo) remoteVideo.srcObject = remoteStream;
-			addMessage('system', { message: 'Remote stream received' });
+			console.log('ontrack event:', event);
+			addMessage('system', { message: `Remote track received: ${event.track.kind}` });
+
+			if (event.streams && event.streams[0]) {
+				remoteStream = event.streams[0];
+				if (remoteVideo) {
+					remoteVideo.srcObject = remoteStream;
+					addMessage('system', { message: 'Remote video attached' });
+				}
+			}
 		};
 
 		// Handle ICE candidates
@@ -190,8 +204,14 @@
 
 	async function handleSignalingMessage(data: any) {
 		if (data.type === 'offer') {
-			// Received an offer, create answer
+			// Received an offer - ensure we have local stream first
+			if (!localStream) {
+				await startLocalVideo();
+			}
+
+			// Create peer connection if not exists
 			if (!peerConnection) createPeerConnection();
+
 			await peerConnection!.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: data.sdp }));
 			const answer = await peerConnection!.createAnswer();
 			await peerConnection!.setLocalDescription(answer);
