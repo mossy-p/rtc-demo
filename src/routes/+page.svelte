@@ -141,10 +141,10 @@
 		peerConnection.onicecandidate = (event) => {
 			if (event.candidate && ws && connected) {
 				ws.send(JSON.stringify({
-					type: 'ice-candidate',
+					type: 'candidate',
 					candidate: event.candidate
 				}));
-				addMessage('sent', { type: 'ice-candidate' });
+				addMessage('sent', { type: 'candidate' });
 			}
 		};
 
@@ -223,7 +223,7 @@
 		} else if (data.type === 'answer') {
 			// Received an answer
 			await peerConnection?.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
-		} else if (data.type === 'ice-candidate' && data.candidate) {
+		} else if (data.type === 'candidate' && data.candidate) {
 			// Received ICE candidate
 			await peerConnection?.addIceCandidate(new RTCIceCandidate(data.candidate));
 		}
