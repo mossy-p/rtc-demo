@@ -1,6 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 
+	let username = $state('');
+	let password = $state('');
+	let token = $state('');
+	let userId = $state('');
 	let roomId = $state('');
 	let roomCode = $state('');
 	let displayName = $state('');
@@ -12,12 +16,68 @@
 	const RTC_URL = 'https://rtc.mossp.me';
 	const WS_URL = 'wss://rtc.mossp.me';
 
+	// Load token from localStorage on mount
+	onMount(() => {
+		const savedToken = localStorage.getItem('rtc_token');
+		const savedUserId = localStorage.getItem('rtc_user_id');
+		if (savedToken && savedUserId) {
+			token = savedToken;
+			userId = savedUserId;
+		}
+		return () => { if (ws) ws.close(); };
+	});
+
+	async function login() {
+		error = '';
+		try {
+			const response = await fetch(`${RTC_URL}/api/auth/login`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ username, password })
+			});
+			if (!response.ok) {
+				throw new Error(`Login failed: ${response.status}`);
+			}
+			const data = await response.json();
+			token = data.token;
+			userId = data.user_id;
+
+			// Save to localStorage
+			localStorage.setItem('rtc_token', token);
+			localStorage.setItem('rtc_user_id', userId);
+
+			// Clear password for security
+			password = '';
+		} catch (e: any) {
+			error = e.message;
+		}
+	}
+
+	function logout() {
+		token = '';
+		userId = '';
+		localStorage.removeItem('rtc_token');
+		localStorage.removeItem('rtc_user_id');
+		if (ws) {
+			ws.close();
+			ws = null;
+			connected = false;
+		}
+	}
+
 	async function createRoom() {
 		error = '';
+		if (!token) {
+			error = 'Please login first';
+			return;
+		}
 		try {
 			const response = await fetch(`${RTC_URL}/api/rooms`, {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
+				headers: {
+					'Content-Type': 'application/json',
+					'Authorization': `Bearer ${token}`
+				},
 				body: JSON.stringify({ maxPlayers: 8 })
 			});
 			if (!response.ok) {
@@ -71,22 +131,47 @@
 	function addMessage(type: string, data: any) {
 		messages = [...messages, { type, data, timestamp: new Date().toLocaleTimeString() }];
 	}
-
-	onMount(() => () => { if (ws) ws.close(); });
 </script>
 
 <div class="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
 	<div class="container mx-auto px-4 py-8">
-		<header class="text-center mb-12">
+		<header class="text-center mb-8">
 			<h1 class="text-5xl font-bold text-white mb-4">WebRTC Signaling Demo</h1>
 			<p class="text-slate-300 text-lg">Testing rtc.mossp.me signaling server</p>
 		</header>
+
+		{#if !token}
+			<div class="max-w-md mx-auto mb-12 bg-white/10 backdrop-blur-lg rounded-lg p-6 border border-white/20">
+				<h2 class="text-2xl font-semibold text-white mb-4">Login</h2>
+				<div class="space-y-4">
+					<div>
+						<label class="block text-sm font-medium text-slate-300 mb-2">Username</label>
+						<input type="text" bind:value={username} placeholder="Enter any username" class="w-full px-4 py-2 bg-black/30 border border-white/20 rounded-lg text-white" />
+					</div>
+					<div>
+						<label class="block text-sm font-medium text-slate-300 mb-2">Password</label>
+						<input type="password" bind:value={password} placeholder="Enter any password" class="w-full px-4 py-2 bg-black/30 border border-white/20 rounded-lg text-white" />
+					</div>
+					<button onclick={login} disabled={!username || !password} class="w-full bg-purple-600 hover:bg-purple-700 disabled:bg-slate-600 text-white font-semibold py-3 px-6 rounded-lg">Login</button>
+					<p class="text-xs text-slate-400 text-center">Demo mode: accepts any username/password</p>
+				</div>
+			</div>
+		{:else}
+			<div class="max-w-md mx-auto mb-8 bg-white/10 backdrop-blur-lg rounded-lg p-4 border border-white/20 flex justify-between items-center">
+				<div>
+					<p class="text-sm text-slate-400">Logged in as</p>
+					<p class="text-white font-semibold">{userId}</p>
+				</div>
+				<button onclick={logout} class="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded-lg">Logout</button>
+			</div>
+		{/if}
 
 		{#if error}
 			<div class="bg-red-500/20 border border-red-500 text-red-200 px-6 py-4 rounded-lg mb-6">{error}</div>
 		{/if}
 
-		<div class="grid md:grid-cols-2 gap-8 mb-8">
+		{#if token}
+			<div class="grid md:grid-cols-2 gap-8 mb-8">
 			<div class="bg-white/10 backdrop-blur-lg rounded-lg p-6 border border-white/20">
 				<h2 class="text-2xl font-semibold text-white mb-4">1. Create Room</h2>
 				<button onclick={createRoom} class="w-full bg-purple-600 hover:bg-purple-700 text-white font-semibold py-3 px-6 rounded-lg">Create New Room</button>
@@ -150,6 +235,8 @@
 				{/if}
 			</div>
 		</div>
+
+		{/if}
 
 		<footer class="text-center mt-12 text-slate-400 text-sm">
 			<p>Powered by <a href="https://rtc.mossp.me/health" target="_blank" class="text-purple-400">rtc.mossp.me</a></p>
