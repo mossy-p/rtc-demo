@@ -17,6 +17,7 @@
 	// WebRTC
 	let peerConnections = $state<Map<string, RTCPeerConnection>>(new Map());
 	let localStream: MediaStream | null = $state(null);
+	let pendingCandidates = $state<Map<string, RTCIceCandidate[]>>(new Map());
 
 	// Game
 	let isHost = $state(false);
@@ -165,6 +166,11 @@
 	async function handleSignalingMessage(data: any) {
 		const fromPeerID = data.from;
 
+		// Only process messages intended for us (or broadcasts)
+		if (data.to && data.to !== userId) {
+			return;
+		}
+
 		if (data.type === 'join' && fromPeerID !== userId) {
 			// New peer joined - create offer
 			if (isHost) {
@@ -177,23 +183,58 @@
 				await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: data.sdp }));
 				const answer = await pc.createAnswer();
 				await pc.setLocalDescription(answer);
-				ws!.send(JSON.stringify({ type: 'answer', sdp: answer.sdp }));
+				ws!.send(JSON.stringify({ type: 'answer', to: fromPeerID, sdp: answer.sdp }));
+
+				// Process any pending ICE candidates
+				const pending = pendingCandidates.get(fromPeerID);
+				if (pending) {
+					console.log(`[WebRTC] Processing ${pending.length} pending candidates for ${fromPeerID}`);
+					for (const candidate of pending) {
+						await pc.addIceCandidate(candidate);
+					}
+					pendingCandidates.delete(fromPeerID);
+				}
 			}
 		} else if (data.type === 'answer') {
 			const pc = peerConnections.get(fromPeerID);
 			if (pc) {
 				await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
+
+				// Process any pending ICE candidates
+				const pending = pendingCandidates.get(fromPeerID);
+				if (pending) {
+					console.log(`[WebRTC] Processing ${pending.length} pending candidates for ${fromPeerID}`);
+					for (const candidate of pending) {
+						await pc.addIceCandidate(candidate);
+					}
+					pendingCandidates.delete(fromPeerID);
+				}
 			}
 		} else if (data.type === 'candidate' && data.candidate) {
 			const pc = peerConnections.get(fromPeerID);
 			if (pc) {
-				await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+				// Only add candidate if remote description is set
+				if (pc.remoteDescription) {
+					try {
+						await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+					} catch (err) {
+						console.error('[WebRTC] Failed to add ICE candidate:', err);
+					}
+				} else {
+					// Queue candidate for later
+					console.log(`[WebRTC] Queuing candidate for ${fromPeerID} (no remote description yet)`);
+					if (!pendingCandidates.has(fromPeerID)) {
+						pendingCandidates.set(fromPeerID, []);
+					}
+					pendingCandidates.get(fromPeerID)!.push(new RTCIceCandidate(data.candidate));
+				}
 			}
 		} else if (data.type === 'leave') {
 			const pc = peerConnections.get(fromPeerID);
 			if (pc) {
 				pc.close();
 				peerConnections.delete(fromPeerID);
+				pendingCandidates.delete(fromPeerID);
 			}
 		}
 	}
@@ -211,7 +252,7 @@
 		// ICE candidate handler
 		pc.onicecandidate = (event) => {
 			if (event.candidate && ws && connected) {
-				ws.send(JSON.stringify({ type: 'candidate', candidate: event.candidate }));
+				ws.send(JSON.stringify({ type: 'candidate', to: peerID, candidate: event.candidate }));
 			}
 		};
 
@@ -224,7 +265,7 @@
 		if (createOffer) {
 			const offer = await pc.createOffer();
 			await pc.setLocalDescription(offer);
-			ws!.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
+			ws!.send(JSON.stringify({ type: 'offer', to: peerID, sdp: offer.sdp }));
 		}
 	}
 
