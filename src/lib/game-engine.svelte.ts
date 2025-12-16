@@ -162,6 +162,14 @@ class GameEngineWASM {
 	}
 
 	/**
+	 * Update state from external source (triggers reactivity)
+	 */
+	updateState(newState: GameState) {
+		this.state = newState;
+		console.log('[GameEngine] State updated (reactive):', this.state?.status, 'players:', Object.keys(this.state?.players || {}));
+	}
+
+	/**
 	 * Get the current game state
 	 */
 	getState(): GameState | null {

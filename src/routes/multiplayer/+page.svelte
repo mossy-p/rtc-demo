@@ -28,6 +28,23 @@
 	let players = $derived(gameState?.players || {});
 	let status = $derived(gameState?.status || 'waiting');
 
+	// Determine if we should show the game interface
+	let shouldShowGame = $derived((isHost && gameInitialized) || (!isHost && gameSync.receivedInitialState));
+
+	// Debug effect - logs when state changes
+	$effect(() => {
+		console.log('[UI] State changed:', {
+			connected,
+			gameInitialized,
+			hasGameState: !!gameState,
+			status,
+			playerCount: Object.keys(players).length,
+			isHost,
+			receivedInitialState: gameSync.receivedInitialState,
+			shouldShowGame
+		});
+	});
+
 	const RTC_URL = 'https://rtc.mossp.me';
 	const WS_URL = 'wss://rtc.mossp.me';
 
@@ -321,7 +338,7 @@
 			{#if !token}
 				<p class="text-center text-slate-400 mt-4">Please <a href="/" class="text-purple-400 hover:underline">login</a> first</p>
 			{/if}
-		{:else if gameInitialized && gameState}
+		{:else if shouldShowGame && gameState}
 			<!-- Game Interface -->
 			<div class="grid lg:grid-cols-3 gap-6">
 				<!-- Players -->

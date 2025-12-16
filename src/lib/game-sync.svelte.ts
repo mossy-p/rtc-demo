@@ -16,6 +16,7 @@ export class GameSyncManager {
 	private dataChannels = $state<Map<string, RTCDataChannel>>(new Map());
 	private peerConnections = $state<Map<string, RTCPeerConnection>>(new Map());
 	public connectedPlayers = $state<Set<string>>(new Set());
+	public receivedInitialState = $state(false);
 
 	/**
 	 * Set whether this client is the host (runs game engine)
@@ -99,16 +100,18 @@ export class GameSyncManager {
 			case 'state':
 				// Client receives full state from host
 				if (!this.isHost) {
-					gameEngine.state = message.state;
+					gameEngine.updateState(message.state);
+					this.receivedInitialState = true;
 					console.log('[Client] Received full game state');
 				}
 				break;
 
 			case 'state-diff':
 				// Client receives state update from host
-				if (!this.isHost && gameEngine.state) {
+				if (!this.isHost && gameEngine.currentState) {
 					// Apply diff to current state
-					Object.assign(gameEngine.state, message.diff);
+					const updatedState = { ...gameEngine.currentState, ...message.diff };
+					gameEngine.updateState(updatedState);
 					console.log('[Client] Applied state diff');
 				}
 				break;
