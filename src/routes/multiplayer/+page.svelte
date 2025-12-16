@@ -104,6 +104,9 @@
 			roomCode = data.code;
 			isHost = true;
 
+			// Set player info for sync
+			gameSync.setPlayerInfo(userId, displayName);
+
 			// Connect to room
 			await connectToRoom();
 
@@ -135,6 +138,7 @@
 
 		isHost = false;
 		gameSync.setHost(false);
+		gameSync.setPlayerInfo(userId, displayName);
 		await connectToRoom();
 	}
 

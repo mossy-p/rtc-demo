@@ -162,6 +162,30 @@ class GameEngineWASM {
 	}
 
 	/**
+	 * Join a player to the game
+	 */
+	async joinPlayer(playerID: string, playerName: string): Promise<ActionResult> {
+		if (!this.initialized) {
+			throw new Error('WASM not loaded');
+		}
+
+		try {
+			const result = (window as any).gameEngineJoinPlayer(playerID, playerName);
+
+			if (result.success && result.state) {
+				this.state = JSON.parse(result.state);
+			} else if (result.error) {
+				this.error = result.error;
+			}
+
+			return result;
+		} catch (err: any) {
+			this.error = `Join failed: ${err.message}`;
+			return { success: false, error: this.error };
+		}
+	}
+
+	/**
 	 * Update state from external source (triggers reactivity)
 	 */
 	updateState(newState: GameState) {

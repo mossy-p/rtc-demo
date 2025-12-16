@@ -6,6 +6,8 @@
 import { gameEngine, type GameState, type ActionResult } from './game-engine.svelte';
 
 export type GameMessage =
+	| { type: 'join-request'; playerID: string; playerName: string }
+	| { type: 'join-result'; success: boolean; error?: string }
 	| { type: 'state'; state: GameState }
 	| { type: 'state-diff'; diff: Partial<GameState> }
 	| { type: 'action'; playerID: string; action: string; payload: any }
@@ -17,12 +19,22 @@ export class GameSyncManager {
 	private peerConnections = $state<Map<string, RTCPeerConnection>>(new Map());
 	public connectedPlayers = $state<Set<string>>(new Set());
 	public receivedInitialState = $state(false);
+	private playerID = '';
+	private playerName = '';
 
 	/**
 	 * Set whether this client is the host (runs game engine)
 	 */
 	setHost(host: boolean) {
 		this.isHost = host;
+	}
+
+	/**
+	 * Set player info for this client
+	 */
+	setPlayerInfo(playerID: string, playerName: string) {
+		this.playerID = playerID;
+		this.playerName = playerName;
 	}
 
 	/**
@@ -69,6 +81,14 @@ export class GameSyncManager {
 						state
 					});
 				}
+			} else {
+				// If client, send join request to host
+				console.log('[Client] Sending join request:', { playerID: this.playerID, playerName: this.playerName });
+				this.sendToPlayer(peerID, {
+					type: 'join-request',
+					playerID: this.playerID,
+					playerName: this.playerName
+				});
 			}
 		};
 
@@ -97,6 +117,41 @@ export class GameSyncManager {
 	 */
 	private async handleMessage(fromPeerID: string, message: GameMessage) {
 		switch (message.type) {
+			case 'join-request':
+				// Host receives join request from client
+				if (this.isHost) {
+					console.log('[Host] Received join request from:', message.playerID, message.playerName);
+					const result = await gameEngine.joinPlayer(message.playerID, message.playerName);
+
+					// Send result back to client
+					this.sendToPlayer(fromPeerID, {
+						type: 'join-result',
+						success: result.success,
+						error: result.error
+					});
+
+					// If successful, broadcast state to all players
+					if (result.success) {
+						const state = gameEngine.getState();
+						if (state) {
+							this.broadcastState(state);
+						}
+					}
+				}
+				break;
+
+			case 'join-result':
+				// Client receives join result from host
+				if (!this.isHost) {
+					if (message.success) {
+						console.log('[Client] Successfully joined game');
+						this.receivedInitialState = true;
+					} else {
+						console.error('[Client] Failed to join game:', message.error);
+					}
+				}
+				break;
+
 			case 'state':
 				// Client receives full state from host
 				if (!this.isHost) {
